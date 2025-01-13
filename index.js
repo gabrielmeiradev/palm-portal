@@ -7,8 +7,7 @@ import fs from "fs";
 import net from "net";
 import { createSpinner } from "nanospinner";
 
-// const SERVER_HOST = "45.175.210.184"
-const SERVER_HOST = "localhost";
+const SERVER_HOST = process.env.SERVER_HOST;
 const SERVER_PORT = 1337;
 
 const getFileNameToDeploy = async () => {
@@ -43,44 +42,8 @@ const getFileNameToDeploy = async () => {
   }
 };
 
-const startProgram = () => {
-  program.option("--a, --auth <char>");
-
-  program.parse();
-
-  // setup auth
-  const options = program.opts();
-  const { auth } = options;
-
-  if (auth) {
-    fs.writeFileSync(".auth.env", `AUTH_TOKEN=${auth}`);
-    process.exit(0);
-  }
-
-  if (fs.existsSync(".auth.env")) {
-    const envContent = fs.readFileSync(".auth.env", "utf-8");
-    const authTokenMatch = envContent.match(/^AUTH_TOKEN=(.*)$/m);
-
-    if (authTokenMatch) {
-      return authTokenMatch[1].trim();
-    } else {
-      throw new Error("AUTH_TOKEN not found in .auth.env");
-    }
-  } else {
-    throw new Error(
-      "You need authenticate to deploy, use --auth <token> (or --a <token>)"
-    );
-  }
-};
-
 const setup = () => {
-  let token;
-  try {
-    token = startProgram();
-  } catch (error) {
-    console.error(error.message);
-    process.exit(1);
-  }
+  program.parse();
 
   figlet("Palm-Portal", async function (err, data) {
     if (err) {
@@ -92,20 +55,17 @@ const setup = () => {
 
     const fileName = await getFileNameToDeploy();
 
-    deploy(fileName, token);
+    deploy(fileName);
   });
 };
 
-const deploy = (fileName, token) => {
+const deploy = (fileName) => {
   let socket = new net.Socket();
   let startTime = Date.now();
   let reader = fs.createReadStream(fileName);
-  let serverMessage;
 
   socket.connect(SERVER_PORT, SERVER_HOST, function () {
     let spinner = createSpinner("Uploading file").start();
-
-    socket.write(token);
 
     reader.on("readable", function () {
       let data;
@@ -124,23 +84,13 @@ const deploy = (fileName, token) => {
     });
 
     reader.on("end", function () {
-      if (serverMessage) {
-        spinner.stop();
-        return socket.end();
-      }
       spinner.success("File uploaded successfully");
       socket.end();
     });
   });
 
-  socket.on("data", function (data) {
-    serverMessage = data.toString();
-    console.error(`\n${serverMessage}`);
-  });
-
   socket.on("error", function (err) {
-    console.error(err.message);
+    console.error("Error connecting to the server");
   });
 };
-
 setup();
