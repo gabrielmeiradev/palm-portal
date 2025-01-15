@@ -8,7 +8,11 @@ import net from "net";
 import { createSpinner } from "nanospinner";
 import { getEnvVariable, setEnvVariable } from "./set-env.js";
 import { codeToLog } from "./server-codes.js";
-const SERVER_HOST = process.env.SERVER_HOST;
+import * as dotenv from "dotenv";
+
+dotenv.config();
+
+const SERVER_HOST_ENV = "45.175.210.184";
 const SERVER_PORT = 1337;
 const TOKEN_ENV_NAME = "TOKEN_PALM_PORTAL";
 
@@ -91,16 +95,15 @@ const deploy = (fileName) => {
   let reader = fs.createReadStream(fileName);
 
   const token = getEnvVariable(TOKEN_ENV_NAME);
-
-  socket.connect(SERVER_PORT, SERVER_HOST, function () {
-    let isError, spinner;
+  socket.connect(SERVER_PORT, SERVER_HOST_ENV, function () {
+    let isError, isSuccess, spinner;
     socket.on("data", function (msg) {
-      ({ isError } = codeToLog(msg.toString()));
+      ({ isError, isSuccess } = codeToLog(msg.toString()));
     });
 
     socket.write(token);
     console.warn("Validating token...");
-    setTimeout(() => {
+    if (isSuccess) {
       spinner = createSpinner("Uploading file").start();
       reader.on("readable", function () {
         let data;
@@ -117,7 +120,7 @@ const deploy = (fileName) => {
           );
         }
       });
-    }, 1000);
+    }
 
     reader.on("end", function () {
       if (isError) {
