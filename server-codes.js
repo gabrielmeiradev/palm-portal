@@ -1,12 +1,16 @@
 export function codeToLog(code) {
-  let isError = false;
-  let action;
+  let isAuthError, isAuthSuccess, isDeployCompleted;
   switch (code) {
     case "incorrect-token":
-      action = console.error("Incorrect token provided");
-      isError = true;
+      isAuthError = true;
+      break;
+    case "correct-token":
+      isAuthSuccess = true;
+      break;
+    case "deploy-completed":
+      isDeployCompleted = true;
       break;
   }
 
-  return { isError };
+  return { isAuthError, isAuthSuccess, isDeployCompleted };
 }

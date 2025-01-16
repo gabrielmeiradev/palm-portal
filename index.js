@@ -7,134 +7,172 @@ import fs from "fs";
 import net from "net";
 import { createSpinner } from "nanospinner";
 import { getEnvVariable, setEnvVariable } from "./set-env.js";
-import { codeToLog } from "./server-codes.js";
-import * as dotenv from "dotenv";
+import { codeToLog as serverCode } from "./server-codes.js";
 
-dotenv.config();
-
-const SERVER_HOST_ENV = "45.175.210.184";
-const SERVER_PORT = 1337;
-const TOKEN_ENV_NAME = "TOKEN_PALM_PORTAL";
-
-const getFileNameToDeploy = async () => {
-  let fileName = program.args[0];
-
-  if (!fileName) {
-    const filesInDir = fs.readdirSync(process.cwd()).filter((file) => {
-      return file.endsWith(".zip");
-    });
-
-    if (filesInDir.length === 0) {
-      console.error("No .zip files found in the current directory");
-      process.exit(1);
-    }
-
-    if (filesInDir.length === 1) {
-      return filesInDir[0];
-    }
-
-    const answer = await inquirer.prompt([
-      {
-        type: "list",
-        name: "fileName",
-        message: "Select the file you want to deploy",
-        choices: filesInDir,
-      },
-    ]);
-
-    return answer.fileName;
-  } else {
-    return fileName;
-  }
+const CONFIG = {
+  SERVER_HOST: "localhost",
+  SERVER_PORT: 1337,
+  TOKEN_ENV_NAME: "TOKEN_PALM_PORTAL",
 };
 
-const setupProgram = () => {
+async function findZipFiles() {
+  return fs.readdirSync(process.cwd()).filter((file) => file.endsWith(".zip"));
+}
+
+async function promptFileSelection(files) {
+  const answer = await inquirer.prompt([
+    {
+      type: "list",
+      name: "fileName",
+      message: "Select the file you want to deploy",
+      choices: files,
+    },
+  ]);
+  return answer.fileName;
+}
+
+async function determineFileName() {
+  const fileName = program.args[0];
+  if (fileName) return fileName;
+
+  const filesInDir = await findZipFiles();
+  if (filesInDir.length === 0) {
+    console.error("No .zip files found in the current directory");
+    process.exit(1);
+  }
+
+  return filesInDir.length === 1
+    ? filesInDir[0]
+    : await promptFileSelection(filesInDir);
+}
+
+function validateAuthentication() {
   program.option("--a, --auth <char>");
   program.parse();
-  // setup auth
-  const options = program.opts();
-  const { auth } = options;
-  const existentToken = getEnvVariable(TOKEN_ENV_NAME);
+
+  const { auth } = program.opts();
+  const existentToken = getEnvVariable(CONFIG.TOKEN_ENV_NAME);
 
   if (!auth && !existentToken) {
     throw new Error(
       "You need authenticate to deploy, use --auth <token> (or --a <token>)"
     );
   }
-  if (auth) setEnvVariable(TOKEN_ENV_NAME, auth);
 
+  if (auth) setEnvVariable(CONFIG.TOKEN_ENV_NAME, auth);
   return existentToken;
-};
+}
 
-const setup = () => {
-  let token;
-  try {
-    token = setupProgram();
-  } catch (error) {
-    console.error(error.message);
-    process.exit(1);
-  }
-
-  figlet("Palm-Portal", async function (err, data) {
-    if (err) {
-      console.log("Something went wrong...");
-      console.dir(err);
-      return;
-    }
-    console.log(gradient.pastel.multiline(data));
-
-    const fileName = await getFileNameToDeploy();
-
-    deploy(fileName);
+function displayBanner() {
+  return new Promise((resolve, reject) => {
+    figlet("Palm-Portal", (err, data) => {
+      if (err) {
+        console.error("Something went wrong...");
+        console.dir(err);
+        reject(err);
+      }
+      console.log(gradient.pastel.multiline(data));
+      resolve();
+    });
   });
-};
+}
 
-const deploy = (fileName) => {
-  let socket = new net.Socket();
+function createUploadSpinner() {
+  return createSpinner("Trying to deploy").start();
+}
+
+function updateUploadProgress(spinner, fileName, startTime, bytesRead) {
+  const totalSize = fs.statSync(fileName).size;
+  const time = ((Date.now() - startTime) / 1000).toFixed(2);
+  const uploadedMB = (bytesRead / (1024 * 1024)).toFixed(2);
+  const totalMB = (totalSize / (1024 * 1024)).toFixed(2);
+
+  spinner.update(
+    `Uploading file: ${uploadedMB} MB of ${totalMB} MB in ${time} seconds`
+  );
+}
+
+function handleSocketConnection(socket, fileName) {
   let startTime = Date.now();
   let reader = fs.createReadStream(fileName);
+  let isAuthError, isAuthSuccess, isDeployCompleted; // one state each time, it will be replaced [1]
+  let spinner;
 
-  const token = getEnvVariable(TOKEN_ENV_NAME);
-  socket.connect(SERVER_PORT, SERVER_HOST_ENV, function () {
-    let isError, isSuccess, spinner;
-    socket.on("data", function (msg) {
-      ({ isError, isSuccess } = codeToLog(msg.toString()));
-    });
+  const token = getEnvVariable(CONFIG.TOKEN_ENV_NAME);
+  socket.on("error", (e) => {
+    console.error(gradient.passion("Error connecting to the server"));
+  });
+  socket.on("data", (msg) => {
+    ({ isAuthError, isAuthSuccess, isDeployCompleted } = serverCode(
+      msg.toString() // [1] here
+    ));
+  });
 
-    socket.write(token);
-    console.warn("Validating token...");
-    if (isSuccess) {
-      spinner = createSpinner("Uploading file").start();
+  socket.on("end", () => {
+    if (isDeployCompleted) {
+      return spinner.success(
+        gradient.cristal("Deployment completed successfully!")
+      );
+    }
+    spinner.error(gradient.passion("Server terminated your connection"));
+    process.exit(1);
+  });
+
+  socket.write(token);
+  console.warn(gradient.fruit("Validating token"));
+  spinner = createUploadSpinner();
+
+  const authCheckInterval = setInterval(() => {
+    if (isAuthError) {
+      spinner.error(gradient.passion("Incorrect token provided"));
+      process.exit(1);
+    }
+    if (isAuthSuccess) {
+      clearInterval(authCheckInterval);
+
       reader.on("readable", function () {
         let data;
         while ((data = this.read())) {
           socket.write(data);
-          const totalSize = fs.statSync(fileName).size;
-          const time = ((Date.now() - startTime) / 1000).toFixed(2);
-          spinner.update(
-            `Uploading file: ${(reader.bytesRead / (1024 * 1024)).toFixed(
-              2
-            )} MB of ${(totalSize / (1024 * 1024)).toFixed(
-              2
-            )} MB in ${time} seconds`
-          );
+          updateUploadProgress(spinner, fileName, startTime, reader.bytesRead);
         }
       });
     }
+  }, 1000);
 
-    reader.on("end", function () {
-      if (isError) {
-        spinner.error("File not uploaded");
-        return socket.end();
-      }
+  reader.on("end", () => {
+    socket.write("can-deploy");
+  });
+}
 
-      spinner.success("File uploaded successfully");
-      socket.end();
-    });
+function deployFile(fileName) {
+  const socket = new net.Socket();
+
+  socket.connect(CONFIG.SERVER_PORT, CONFIG.SERVER_HOST, () => {
+    handleSocketConnection(socket, fileName);
   });
 
-  socket.on("error", function (err) {
-    console.error("Error connecting to the server");
+  socket.on("error", (err) => {
+    console.error(
+      gradient.fruit(
+        `Failed to connect to ${CONFIG.SERVER_HOST}:${CONFIG.SERVER_PORT}`
+      )
+    );
+    console.error(gradient.passion(err.message));
+    process.exit(1);
   });
-};
-setup();
+}
+
+async function main() {
+  try {
+    validateAuthentication();
+    await displayBanner();
+    const fileName = await determineFileName();
+    deployFile(fileName);
+  } catch (error) {
+    console.error(error.message);
+    process.exit(1);
+  }
+}
+
+main();
